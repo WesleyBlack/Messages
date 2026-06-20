@@ -171,6 +171,7 @@ import org.fossify.messages.helpers.PICK_SAVE_DIR_INTENT
 import org.fossify.messages.helpers.PICK_SAVE_FILE_INTENT
 import org.fossify.messages.helpers.PICK_VIDEO_INTENT
 import org.fossify.messages.helpers.SEARCHED_MESSAGE_ID
+import org.fossify.messages.helpers.TapbackReaction
 import org.fossify.messages.helpers.THREAD_ATTACHMENT_URI
 import org.fossify.messages.helpers.THREAD_ATTACHMENT_URIS
 import org.fossify.messages.helpers.THREAD_ID
@@ -580,7 +581,9 @@ class ThreadActivity : SimpleActivity() {
                         toRecycleBin,
                         fromRecycleBin
                     )
-                }
+                },
+                sendReaction = ::sendTapbackReaction,
+                bottomBarColor = getBottomBarColor(),
             )
 
             binding.threadMessagesList.adapter = currAdapter
@@ -874,7 +877,7 @@ class ThreadActivity : SimpleActivity() {
                 threadTypeMessage.imeOptions = EditorInfo.IME_ACTION_SEND
                 threadTypeMessage.setOnEditorActionListener { _, action, _ ->
                     if (action == EditorInfo.IME_ACTION_SEND) {
-                        dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+                        sendMessageFromKeyboard()
                         return@setOnEditorActionListener true
                     }
                     false
@@ -882,7 +885,7 @@ class ThreadActivity : SimpleActivity() {
 
                 threadTypeMessage.setOnKeyListener { _, keyCode, event ->
                     if (keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_UP) {
-                        sendMessage()
+                        sendMessageFromKeyboard()
                         return@setOnKeyListener true
                     }
                     false
@@ -1545,6 +1548,14 @@ class ThreadActivity : SimpleActivity() {
         }
     }
 
+    private fun sendMessageFromKeyboard() {
+        if (binding.messageHolder.threadTypeMessage.value.isEmpty() && getAttachmentSelections().isEmpty()) {
+            return
+        }
+
+        sendMessage()
+    }
+
     private fun sendScheduledMessage(text: String, subscriptionId: Int) {
         if (scheduledDateTime.millis < System.currentTimeMillis() + 1000L) {
             toast(R.string.must_pick_time_in_the_future)
@@ -1604,6 +1615,25 @@ class ThreadActivity : SimpleActivity() {
             }
             clearCurrentMessage()
 
+        } catch (e: Exception) {
+            showErrorToast(e)
+        } catch (e: Error) {
+            showErrorToast(
+                e.localizedMessage ?: getString(org.fossify.commons.R.string.unknown_error_occurred)
+            )
+        }
+    }
+
+    private fun sendTapbackReaction(message: Message, reaction: TapbackReaction, isRemoval: Boolean) {
+        val text = EmojiReactionHelper.buildTapbackMessage(message, reaction, isRemoval)
+        val subscriptionId = availableSIMCards.getOrNull(currentSIMCardIndex)?.subscriptionId
+            ?: SmsManager.getDefaultSmsSubscriptionId()
+
+        try {
+            refreshedSinceSent = false
+            sendMessageCompat(text, participants.getAddresses(), subscriptionId, emptyList(), null)
+            refreshMessages()
+            refreshConversations()
         } catch (e: Exception) {
             showErrorToast(e)
         } catch (e: Error) {

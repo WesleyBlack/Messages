@@ -6,9 +6,9 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:layout_marginTop="@dimen/small_margin"
+    android:background="@drawable/selector"
     android:clipChildren="false"
     android:clipToPadding="false"
-    android:foreground="@drawable/selector"
     android:paddingHorizontal="@dimen/activity_margin">
 
     <RelativeLayout
@@ -59,7 +59,7 @@
             android:id="@+id/thread_message_body"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_below="@+id/thread_message_attachments_holder"
+            android:layout_below="@+id/thread_message_reaction_bar"
             android:layout_marginVertical="@dimen/tiny_margin"
             android:layout_toEndOf="@id/thread_message_sender_photo"
             android:autoLink="email|web"
@@ -69,6 +69,19 @@
             android:textSize="@dimen/normal_text_size"
             tools:drawableEndCompat="@drawable/scheduled_message_icon"
             tools:text="Message content" />
+
+        <LinearLayout
+            android:id="@+id/thread_message_reaction_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_below="@+id/thread_message_attachments_holder"
+            android:layout_marginBottom="@dimen/tiny_margin"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:visibility="gone"
+            tools:visibility="visible" />
 
         <org.fossify.commons.views.MyTextView
             android:id="@+id/thread_message_reactions"

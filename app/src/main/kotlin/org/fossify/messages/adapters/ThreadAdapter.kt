@@ -7,6 +7,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
+import android.view.Gravity
 import android.view.Menu
 import android.view.View
 import android.view.ViewGroup
@@ -14,8 +15,8 @@ import android.widget.LinearLayout
 import android.widget.RelativeLayout
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.constraintlayout.widget.ConstraintSet
-import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toDrawable
+import androidx.core.view.marginEnd
 import androidx.core.view.updateLayoutParams
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.SimpleItemAnimator
@@ -29,6 +30,7 @@ import com.bumptech.glide.load.resource.bitmap.FitCenter
 import com.bumptech.glide.request.RequestListener
 import com.bumptech.glide.request.RequestOptions
 import com.bumptech.glide.request.target.Target
+import org.fossify.commons.activities.BaseSimpleActivity
 import org.fossify.commons.adapters.MyRecyclerViewListAdapter
 import org.fossify.commons.dialogs.ConfirmationDialog
 import org.fossify.commons.extensions.applyColorFilter
@@ -37,12 +39,10 @@ import org.fossify.commons.extensions.beVisible
 import org.fossify.commons.extensions.beVisibleIf
 import org.fossify.commons.extensions.copyToClipboard
 import org.fossify.commons.extensions.formatDateOrTime
-import org.fossify.commons.extensions.getBottomNavigationBackgroundColor
 import org.fossify.commons.extensions.getContrastColor
 import org.fossify.commons.extensions.getProperPrimaryColor
 import org.fossify.commons.extensions.getTextSize
 import org.fossify.commons.extensions.getTimeFormat
-import org.fossify.commons.extensions.isDynamicTheme
 import org.fossify.commons.extensions.shareTextIntent
 import org.fossify.commons.extensions.showErrorToast
 import org.fossify.commons.extensions.usableScreenSize
@@ -50,6 +50,7 @@ import org.fossify.commons.helpers.FontHelper
 import org.fossify.commons.helpers.SimpleContactsHelper
 import org.fossify.commons.helpers.ensureBackgroundThread
 import org.fossify.commons.views.MyRecyclerView
+import org.fossify.commons.views.MyTextView
 import org.fossify.messages.R
 import org.fossify.messages.activities.NewConversationActivity
 import org.fossify.messages.activities.SimpleActivity
@@ -75,7 +76,9 @@ import org.fossify.messages.extensions.isVideoMimeType
 import org.fossify.messages.extensions.launchViewIntent
 import org.fossify.messages.extensions.startContactDetailsIntent
 import org.fossify.messages.extensions.subscriptionManagerCompat
+import org.fossify.messages.helpers.EmojiReactionHelper
 import org.fossify.messages.helpers.EXTRA_VCARD_URI
+import org.fossify.messages.helpers.TapbackReaction
 import org.fossify.messages.helpers.THREAD_DATE_TIME
 import org.fossify.messages.helpers.THREAD_RECEIVED_MESSAGE
 import org.fossify.messages.helpers.THREAD_SENT_MESSAGE
@@ -99,28 +102,36 @@ class ThreadAdapter(
     recyclerView: MyRecyclerView,
     itemClick: (Any) -> Unit,
     val isRecycleBin: Boolean,
-    val deleteMessages: (messages: List<Message>, toRecycleBin: Boolean, fromRecycleBin: Boolean) -> Unit
+    val deleteMessages: (messages: List<Message>, toRecycleBin: Boolean, fromRecycleBin: Boolean) -> Unit,
+    val sendReaction: (message: Message, reaction: TapbackReaction, isRemoval: Boolean) -> Unit,
+    val bottomBarColor: Int,
 ) : MyRecyclerViewListAdapter<ThreadItem>(activity, recyclerView, ThreadItemDiffCallback(), itemClick) {
     private var fontSize = activity.getTextSize()
+    private val messageList = recyclerView
+    private var previousTapbackSelectionKeys = emptySet<Int>()
 
     @SuppressLint("MissingPermission")
     private val hasMultipleSIMCards = (activity.subscriptionManagerCompat().activeSubscriptionInfoList?.size ?: 0) > 1
     private val maxChatBubbleWidth = (activity.usableScreenSize.x * 0.8f).toInt()
-    private val reactionHorizontalOverlap = 8.dpToPx()
-    private val reactionVerticalOverlap = 4.dpToPx()
-    private val reactionElevation = 1.dpToPx()
+    private val reactionHorizontalOverlap = REACTION_HORIZONTAL_OVERLAP_DP.dpToPx()
+    private val reactionVerticalOverlap = REACTION_VERTICAL_OVERLAP_DP.dpToPx()
+    private val reactionElevation = REACTION_ELEVATION_DP.dpToPx()
 
     companion object {
         private const val MAX_MEDIA_HEIGHT_RATIO = 3
         private const val SIM_BITS = 21
         private const val SIM_MASK = (1L shl SIM_BITS) - 1
+        private const val REACTION_HORIZONTAL_OVERLAP_DP = 8
+        private const val REACTION_VERTICAL_OVERLAP_DP = 4
+        private const val REACTION_ELEVATION_DP = 1
+        private const val REACTION_CORNER_RADIUS_DP = 18
     }
 
     init {
         setupDragListener(true)
         setHasStableIds(true)
-        recyclerView.clipChildren = false
-        (recyclerView.itemAnimator as? SimpleItemAnimator)?.supportsChangeAnimations = false
+        messageList.clipChildren = false
+        (messageList.itemAnimator as? SimpleItemAnimator)?.supportsChangeAnimations = false
     }
 
     override fun getActionMenuId() = R.menu.cab_thread
@@ -142,6 +153,7 @@ class ThreadAdapter(
             findItem(R.id.cab_properties).isVisible = isOneItemSelected
             findItem(R.id.cab_restore).isVisible = isRecycleBin
         }
+        refreshTapbackBars()
     }
 
     override fun actionItemPressed(id: Int) {
@@ -174,9 +186,13 @@ class ThreadAdapter(
         return currentList.indexOfFirst { (it as? Message)?.getSelectionKey() == key }
     }
 
-    override fun onActionModeCreated() {}
+    override fun onActionModeCreated() {
+        refreshTapbackBars()
+    }
 
-    override fun onActionModeDestroyed() {}
+    override fun onActionModeDestroyed() {
+        refreshTapbackBars()
+    }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val binding = when (viewType) {
@@ -355,6 +371,22 @@ class ThreadAdapter(
 
     private fun isThreadDateTime(position: Int) = currentList.getOrNull(position) is ThreadDateTime
 
+    private fun refreshTapbackBars() {
+        val selectedTapbackKeys = selectedKeys.toSet()
+        val changedKeys = previousTapbackSelectionKeys + selectedTapbackKeys
+        previousTapbackSelectionKeys = selectedTapbackKeys
+        if (changedKeys.isEmpty()) {
+            return
+        }
+
+        messageList.post {
+            changedKeys
+                .map(::getItemKeyPosition)
+                .filter { position -> position != -1 }
+                .forEach(::notifyItemChanged)
+        }
+    }
+
     fun updateMessages(
         newMessages: ArrayList<ThreadItem>,
         scrollPosition: Int = -1,
@@ -374,7 +406,8 @@ class ThreadAdapter(
 
     private fun setupView(holder: ViewHolder, view: View, message: Message) {
         ItemMessageBinding.bind(view).apply {
-            threadMessageHolder.isSelected = selectedKeys.contains(message.getSelectionKey())
+            val isSelected = selectedKeys.contains(message.getSelectionKey())
+            threadMessageHolder.isSelected = isSelected
             threadMessageBody.apply {
                 text = message.body
                 setTextSize(TypedValue.COMPLEX_UNIT_PX, fontSize)
@@ -394,6 +427,17 @@ class ThreadAdapter(
             } else {
                 setupSentMessageView(messageBinding = this, message = message)
             }
+            setupTapbackReactionBar(
+                activity = activity,
+                selectedKeys = selectedKeys,
+                message = message,
+                isRecycleBin = isRecycleBin,
+                reactionElevation = reactionElevation,
+                textColor = textColor,
+                sendReaction = sendReaction,
+                bottomBarColor = bottomBarColor,
+                finishActionMode = ::finishActMode,
+            )
             setupEmojiReactions(messageBinding = this, message = message)
 
             if (message.attachment?.attachments?.isNotEmpty() == true) {
@@ -437,12 +481,16 @@ class ThreadAdapter(
                 true
             }
 
+            val hasOwnReaction = reactions.any { it.isMine }
+            val reactionBackgroundColor = if (hasOwnReaction) activity.getProperPrimaryColor() else bottomBarColor
+            val reactionTextColor = if (hasOwnReaction) reactionBackgroundColor.getContrastColor() else textColor
+
             if (message.isReceivedMessage()) {
-                background = createReactionBackground()
+                background = createRoundedBackground(reactionBackgroundColor)
                 elevation = reactionElevation
                 translationX = reactionHorizontalOverlap
                 translationY = -reactionVerticalOverlap
-                setTextColor(textColor)
+                setTextColor(reactionTextColor)
                 updateLayoutParams<RelativeLayout.LayoutParams> {
                     removeRule(RelativeLayout.END_OF)
                     removeRule(RelativeLayout.ALIGN_PARENT_END)
@@ -453,11 +501,11 @@ class ThreadAdapter(
                     addRule(RelativeLayout.ALIGN_END, messageBinding.threadMessageBody.id)
                 }
             } else {
-                background = createReactionBackground()
+                background = createRoundedBackground(reactionBackgroundColor)
                 elevation = reactionElevation
                 translationX = -reactionHorizontalOverlap
                 translationY = -reactionVerticalOverlap
-                setTextColor(textColor)
+                setTextColor(reactionTextColor)
                 updateLayoutParams<RelativeLayout.LayoutParams> {
                     removeRule(RelativeLayout.END_OF)
                     removeRule(RelativeLayout.ALIGN_PARENT_END)
@@ -472,11 +520,15 @@ class ThreadAdapter(
 
     private fun showReactionDetails(message: Message) {
         val rows = message.emojiReactions.map { reaction ->
-            val contactName = message.participants
-                .firstOrNull { participant -> participant.doesHavePhoneNumber(reaction.senderPhoneNumber) }
-                ?.name
-                ?.takeIf { it.isNotBlank() }
-                ?: reaction.senderPhoneNumber
+            val contactName = if (reaction.isMine) {
+                activity.getString(R.string.me)
+            } else {
+                message.participants
+                    .firstOrNull { participant -> participant.doesHavePhoneNumber(reaction.senderPhoneNumber) }
+                    ?.name
+                    ?.takeIf { it.isNotBlank() }
+                    ?: reaction.senderPhoneNumber
+            }
 
             "${reaction.emoji} $contactName"
         }
@@ -717,21 +769,145 @@ class ThreadAdapter(
         return this * resources.displayMetrics.density
     }
 
-    private fun createReactionBackground(): GradientDrawable {
+    private fun createRoundedBackground(color: Int): GradientDrawable {
         return GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = 18.dpToPx()
-            setColor(getBottomBarColor())
+            cornerRadius = REACTION_CORNER_RADIUS_DP.dpToPx()
+            setColor(color)
+        }
+    }
+}
+
+private const val TAPBACK_BAR_HORIZONTAL_PADDING_DP = 16
+private const val TAPBACK_BAR_VERTICAL_PADDING_DP = 6
+private const val TAPBACK_EMOJI_PADDING_DP = 10
+private const val TAPBACK_EMOJI_TEXT_SIZE = 24f
+private const val TAPBACK_CORNER_RADIUS_DP = 18
+
+private fun ItemMessageBinding.setupTapbackReactionBar(
+    activity: BaseSimpleActivity,
+    selectedKeys: Collection<Int>,
+    message: Message,
+    isRecycleBin: Boolean,
+    reactionElevation: Float,
+    textColor: Int,
+    sendReaction: (message: Message, reaction: TapbackReaction, isRemoval: Boolean) -> Unit,
+    bottomBarColor: Int,
+    finishActionMode: () -> Unit,
+) {
+    val shouldShowBar = selectedKeys.size == 1 &&
+        selectedKeys.contains(message.getSelectionKey()) &&
+        !isRecycleBin &&
+        message.body.isNotBlank()
+
+    threadMessageReactionBar.apply {
+        beVisibleIf(shouldShowBar)
+        removeAllViews()
+        if (!shouldShowBar) return
+
+        val barHorizontalPadding = TAPBACK_BAR_HORIZONTAL_PADDING_DP.dpToPx(activity).toInt()
+        val barVerticalPadding = TAPBACK_BAR_VERTICAL_PADDING_DP.dpToPx(activity).toInt()
+        val emojiPadding = TAPBACK_EMOJI_PADDING_DP.dpToPx(activity).toInt()
+
+        background = createTapbackBackground(bottomBarColor, activity)
+        elevation = reactionElevation
+        setPadding(barHorizontalPadding, barVerticalPadding, barHorizontalPadding, barVerticalPadding)
+
+        updateLayoutParams<RelativeLayout.LayoutParams> {
+            val senderPhotoOffset = if (message.isReceivedMessage()) {
+                val senderPhotoWidth = threadMessageSenderPhoto.width.takeIf { width -> width > 0 }
+                    ?: threadMessageSenderPhoto.layoutParams.width
+                senderPhotoWidth + threadMessageSenderPhoto.marginEnd
+            } else {
+                0
+            }
+            setMarginStart(senderPhotoOffset)
+            setMarginEnd(0)
+            removeRule(RelativeLayout.ALIGN_PARENT_END)
+            removeRule(RelativeLayout.ALIGN_END)
+            removeRule(RelativeLayout.ALIGN_RIGHT)
+            removeRule(RelativeLayout.ALIGN_START)
+            removeRule(RelativeLayout.ALIGN_LEFT)
+            removeRule(RelativeLayout.END_OF)
+            addRule(RelativeLayout.BELOW, threadMessageAttachmentsHolder.id)
+            addRule(RelativeLayout.ALIGN_PARENT_START)
+            addRule(RelativeLayout.ALIGN_PARENT_END)
+        }
+
+        val selectedEmoji = message.emojiReactions.firstOrNull { it.isMine }?.emoji
+        EmojiReactionHelper.tapbackReactions.forEach { reaction ->
+            addView(
+                createTapbackReactionView(
+                    activity = activity,
+                    reaction = reaction,
+                    selectedEmoji = selectedEmoji,
+                    emojiPadding = emojiPadding,
+                    textColor = textColor,
+                    sendReaction = sendReaction,
+                    finishActionMode = finishActionMode,
+                    message = message,
+                )
+            )
+        }
+    }
+}
+
+private fun createTapbackReactionView(
+    activity: BaseSimpleActivity,
+    reaction: TapbackReaction,
+    selectedEmoji: String?,
+    emojiPadding: Int,
+    textColor: Int,
+    sendReaction: (message: Message, reaction: TapbackReaction, isRemoval: Boolean) -> Unit,
+    finishActionMode: () -> Unit,
+    message: Message,
+): View {
+    val isSelected = selectedEmoji == reaction.emoji
+    val emojiView = MyTextView(activity).apply {
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        )
+        gravity = Gravity.CENTER
+        includeFontPadding = true
+        text = reaction.emoji
+        textSize = TAPBACK_EMOJI_TEXT_SIZE
+        setPadding(emojiPadding, emojiPadding, emojiPadding, emojiPadding)
+
+        if (isSelected) {
+            val primaryColor = activity.getProperPrimaryColor()
+            background = createTapbackBackground(primaryColor, activity)
+            setTextColor(primaryColor.getContrastColor())
+        } else {
+            background = null
+            setTextColor(textColor)
         }
     }
 
-    private fun getBottomBarColor(): Int {
-        return if (activity.isDynamicTheme()) {
-            ContextCompat.getColor(activity, org.fossify.commons.R.color.you_bottom_bar_color)
-        } else {
-            activity.getBottomNavigationBackgroundColor()
+    return LinearLayout(activity).apply {
+        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        gravity = Gravity.CENTER
+        isClickable = true
+        clipChildren = false
+        clipToPadding = false
+        addView(emojiView)
+        setOnClickListener {
+            sendReaction(message, reaction, isSelected)
+            finishActionMode()
         }
     }
+}
+
+private fun createTapbackBackground(color: Int, activity: BaseSimpleActivity): GradientDrawable {
+    return GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = TAPBACK_CORNER_RADIUS_DP.dpToPx(activity)
+        setColor(color)
+    }
+}
+
+private fun Int.dpToPx(activity: BaseSimpleActivity): Float {
+    return this * activity.resources.displayMetrics.density
 }
 
 private class ThreadItemDiffCallback : DiffUtil.ItemCallback<ThreadItem>() {

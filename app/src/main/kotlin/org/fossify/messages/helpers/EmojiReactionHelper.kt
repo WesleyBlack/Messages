@@ -11,7 +11,22 @@ data class ParsedEmojiReaction(
     val isRemoval: Boolean = false,
 )
 
+data class TapbackReaction(
+    val emoji: String,
+    val addedText: String,
+    val removedText: String,
+)
+
 object EmojiReactionHelper {
+    val tapbackReactions = listOf(
+        TapbackReaction("❤️", "Loved", "Removed a heart from"),
+        TapbackReaction("👍", "Liked", "Removed a like from"),
+        TapbackReaction("👎", "Disliked", "Removed a dislike from"),
+        TapbackReaction("😂", "Laughed at", "Removed a laugh from"),
+        TapbackReaction("‼️", "Emphasized", "Removed an exclamation from"),
+        TapbackReaction("❓", "Questioned", "Removed a question mark from"),
+    )
+
     private val reactionPatterns: LinkedHashMap<Regex, (MatchResult) -> ParsedEmojiReaction?> = linkedMapOf(
         Regex(
             "(?s)^\u200a[^\u200b\u200a]*\u200b([^\u200b]*)\u200b[^\u200b\u200a]*\u200a(.*)\u200a[^\u200b\u200a]*\u200a\\Z"
@@ -29,12 +44,9 @@ object EmojiReactionHelper {
     )
 
     init {
-        addAppleTapbackPattern("❤️", "Loved", "Removed a heart from")
-        addAppleTapbackPattern("👍", "Liked", "Removed a like from")
-        addAppleTapbackPattern("👎", "Disliked", "Removed a dislike from")
-        addAppleTapbackPattern("😂", "Laughed at", "Removed a laugh from")
-        addAppleTapbackPattern("‼️", "Emphasized", "Removed an exclamation from")
-        addAppleTapbackPattern("❓", "Questioned", "Removed a question mark from")
+        tapbackReactions.forEach { reaction ->
+            addAppleTapbackPattern(reaction)
+        }
 
         reactionPatterns[Regex("""(?s)^Reacted (.+?) to ["“](.+?)["”]$""")] = { match ->
             if (match.groupValues.getOrNull(1) == "with a sticker") {
@@ -46,6 +58,11 @@ object EmojiReactionHelper {
         removalPatterns[Regex("""(?s)^Removed (.+?) from ["“](.+?)["”]$""")] = { match ->
             ParsedEmojiReaction(match.groupValues[1], match.groupValues[2], isRemoval = true)
         }
+    }
+
+    fun buildTapbackMessage(message: Message, reaction: TapbackReaction, isRemoval: Boolean): String {
+        val action = if (isRemoval) reaction.removedText else reaction.addedText
+        return "$action “${message.body.trim()}”"
     }
 
     fun parseEmojiReaction(body: String): ParsedEmojiReaction? {
@@ -83,12 +100,12 @@ object EmojiReactionHelper {
             .toCollection(ArrayList())
     }
 
-    private fun addAppleTapbackPattern(emoji: String, addedPrefix: String, removedPrefix: String) {
-        reactionPatterns[Regex("""(?s)^$addedPrefix ["“](.+?)["”]$""")] = { match ->
-            ParsedEmojiReaction(emoji, match.groupValues[1])
+    private fun addAppleTapbackPattern(reaction: TapbackReaction) {
+        reactionPatterns[Regex("""(?s)^${reaction.addedText} ["“](.+?)["”]$""")] = { match ->
+            ParsedEmojiReaction(reaction.emoji, match.groupValues[1])
         }
-        removalPatterns[Regex("""(?s)^$removedPrefix ["“](.+?)["”]$""")] = { match ->
-            ParsedEmojiReaction(emoji, match.groupValues[1], isRemoval = true)
+        removalPatterns[Regex("""(?s)^${reaction.removedText} ["“](.+?)["”]$""")] = { match ->
+            ParsedEmojiReaction(reaction.emoji, match.groupValues[1], isRemoval = true)
         }
     }
 
@@ -138,9 +155,10 @@ object EmojiReactionHelper {
             senderPhoneNumber = reactionMessage.senderPhoneNumber,
             emoji = parsedReaction.emoji,
             originalMessageText = parsedReaction.originalMessage,
+            isMine = !reactionMessage.isReceivedMessage(),
         )
         targetMessage.emojiReactions = targetMessage.emojiReactions
-            .filterNot { it.senderPhoneNumber == reaction.senderPhoneNumber } + reaction
+            .filterNot { it.isMine == reaction.isMine && it.senderPhoneNumber == reaction.senderPhoneNumber } + reaction
         reactionMessage.isEmojiReaction = true
     }
 
@@ -150,7 +168,8 @@ object EmojiReactionHelper {
         targetMessage: Message,
     ) {
         targetMessage.emojiReactions = targetMessage.emojiReactions.filterNot { reaction ->
-            reaction.senderPhoneNumber == reactionMessage.senderPhoneNumber &&
+            reaction.isMine == !reactionMessage.isReceivedMessage() &&
+                reaction.senderPhoneNumber == reactionMessage.senderPhoneNumber &&
                 reaction.emoji == parsedReaction.emoji
         }
         reactionMessage.isEmojiReaction = true

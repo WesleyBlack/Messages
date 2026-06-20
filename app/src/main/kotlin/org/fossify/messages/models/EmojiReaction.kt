@@ -5,4 +5,5 @@ data class EmojiReaction(
     val senderPhoneNumber: String,
     val emoji: String,
     val originalMessageText: String,
+    val isMine: Boolean = false,
 )
